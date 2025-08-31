@@ -16,10 +16,8 @@ jobs:
           distribution: temurin
           java-version: 17
       
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: 3.1
-          bundler-cache: true
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
       
       - name: Setup keystore
         env:
@@ -35,7 +33,7 @@ jobs:
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           ./gradlew assembleStandardRelease \
-            -Pandroid.injected.signing.store.file=keystores/release.jks \
+            -Pandroid.injected.signing.store.file=../../keystores/release.jks \
             -Pandroid.injected.signing.store.password=$ANDROID_STORE_PASSWORD \
             -Pandroid.injected.signing.key.alias=$ALIAS \
             -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD
