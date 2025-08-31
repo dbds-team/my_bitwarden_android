@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       
@@ -19,6 +22,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
       
+      - name: Modify dependencies to avoid private packages
+        run: |
+          # Remove the private SDK repository to avoid authentication issues
+          sed -i '/GitHubPackages.*Bitwarden/,/}/d' settings.gradle.kts
+          # Comment out SDK dependency in version catalog
+          sed -i 's/bitwarden-sdk = .*/# &/' gradle/libs.versions.toml
+          # Comment out SDK implementation in build files
+          find . -name "*.gradle.kts" -exec sed -i 's/.*bitwarden-sdk.*/\/\/ &/' {} \;
+          echo "Modified dependencies to skip private packages"
+      
       - name: Setup keystore
         env:
           KEY_JKS: ${{ secrets.KEY_JKS }}
@@ -26,7 +39,11 @@ jobs:
           mkdir -p keystores
           echo "$KEY_JKS" | base64 -d > keystores/release.jks
       
-      - name: Build signed APK
+      - name: Build Debug APK
+        run: |
+          ./gradlew assembleStandardDebug
+      
+      - name: Build signed Release APK
         env:
           ALIAS: ${{ secrets.ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -40,5 +57,10 @@ jobs:
       
       - uses: actions/upload-artifact@v4
         with:
-          name: bitwarden-android-apk
+          name: bitwarden-android-debug-apk
+          path: app/build/outputs/apk/standard/debug/*.apk
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitwarden-android-release-apk  
           path: app/build/outputs/apk/standard/release/*.apk
