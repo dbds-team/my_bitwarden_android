@@ -83,6 +83,53 @@ jobs:
             echo "⚠️ Warning: Standard repositories might be missing"
           fi
       
+      - name: Handle Google Services
+        run: |
+          # Option 1: Create a placeholder google-services.json
+          # This is a minimal valid google-services.json that won't enable any Google services
+          cat > app/google-services.json << 'EOF'
+          {
+            "project_info": {
+              "project_number": "123456789",
+              "project_id": "bitwarden-placeholder",
+              "storage_bucket": "bitwarden-placeholder.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789:android:abcdef123456",
+                  "android_client_info": {
+                    "package_name": "com.x8bit.bitwarden"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyDummyKeyPlaceholder"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          
+          # Option 2: Try to disable Google Services plugin
+          # Comment out the Google Services plugin in build files
+          find . -name "*.gradle.kts" -exec sed -i \
+            -e 's/.*com\.google\.gms\.google-services.*/\/\/ &/' \
+            -e 's/.*apply.*google-services.*/\/\/ &/' \
+            -e 's/.*id.*google-services.*/\/\/ &/' \
+            {} \;
+          
+          echo "Created placeholder google-services.json"
+          ls -la app/google-services.json
+      
       - name: Setup keystore
         env:
           KEY_JKS: ${{ secrets.KEY_JKS }}
