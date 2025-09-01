@@ -24,17 +24,25 @@ jobs:
       
       - name: Modify dependencies to avoid private packages
         run: |
-          # Remove ALL GitHub Packages repositories to avoid issues
-          sed -i '/maven.*github.*packages/,/^[[:space:]]*}/d' settings.gradle.kts
-          sed -i '/GitHubPackages/,/}/d' settings.gradle.kts
+          # First, let's see what we're working with
+          echo "=== Original settings.gradle.kts repositories ==="
+          grep -A 15 "repositories {" settings.gradle.kts || true
           
-          # Ensure we have standard repositories
-          if ! grep -q "mavenCentral()" settings.gradle.kts; then
-            sed -i '/repositories {/a\        mavenCentral()' settings.gradle.kts
-          fi
-          if ! grep -q 'google()' settings.gradle.kts; then
-            sed -i '/repositories {/a\        google()' settings.gradle.kts
-          fi
+          # Replace GitHub Packages repository with empty string (safer than deletion)
+          # This preserves the repository structure
+          sed -i 's|maven {[^}]*github\.com/bitwarden/sdk[^}]*}|// GitHub Packages removed|g' settings.gradle.kts
+          
+          # Alternative approach: comment out the problematic maven block
+          sed -i '/maven.*{/,/^[[:space:]]*}/ {
+            /github\.com\/bitwarden/,/}/ s/^/\/\/ /
+          }' settings.gradle.kts
+          
+          # Fix any maven blocks with missing URL
+          sed -i '/maven[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}/ {
+            /url[[:space:]]*=/! {
+              /maven[[:space:]]*{/ a\        url = uri("https://repo.maven.apache.org/maven2/")
+            }
+          }' settings.gradle.kts
           
           # Comment out SDK dependency in version catalog
           sed -i 's/bitwarden-sdk = .*/# &/' gradle/libs.versions.toml
@@ -42,9 +50,16 @@ jobs:
           # Comment out SDK implementation in build files
           find . -name "*.gradle.kts" -exec sed -i 's/.*bitwarden-sdk.*/\/\/ &/' {} \;
           
-          echo "Modified dependencies to skip private packages"
-          echo "=== Current repositories in settings.gradle.kts ==="
-          grep -A 10 "repositories {" settings.gradle.kts || true
+          echo "=== Modified settings.gradle.kts repositories ==="
+          grep -A 15 "repositories {" settings.gradle.kts || true
+          
+          # Validate that we have required repositories
+          echo "=== Validating repositories ==="
+          if grep -q "google()" settings.gradle.kts && grep -q "mavenCentral()" settings.gradle.kts; then
+            echo "✅ Standard repositories found"
+          else
+            echo "⚠️ Warning: Standard repositories might be missing"
+          fi
       
       - name: Setup keystore
         env:
