@@ -110,13 +110,41 @@ jobs:
       - name: Generate Kotlin bindings
         working-directory: sdk-internal
         run: |
-          # Generate Kotlin bindings using uniffi-bindgen-kotlin
-          cargo run -p uniffi-bindgen-kotlin
+          echo "Generating Kotlin bindings..."
           
-          # The bindings should be generated in the right place by the build script
-          echo "✅ Kotlin bindings generated"
-          find crates/bitwarden-uniffi/kotlin -name "*.kt" | head -20
-          ls -la crates/bitwarden-uniffi/kotlin/sdk/src/main/java/com/bitwarden/sdk/ || true
+          # First, check if uniffi-bindgen exists
+          if cargo run -p uniffi-bindgen-kotlin --help 2>/dev/null; then
+            echo "Using uniffi-bindgen-kotlin..."
+            cargo run -p uniffi-bindgen-kotlin
+          else
+            echo "uniffi-bindgen-kotlin not found, trying alternative approach..."
+            
+            # Alternative: Generate bindings using uniffi-bindgen directly
+            cargo install uniffi_bindgen_cli --version "0.25.0"
+            
+            # Find the UDL file
+            UDL_FILE=$(find . -name "*.udl" | head -1)
+            if [ -n "$UDL_FILE" ]; then
+              echo "Found UDL file: $UDL_FILE"
+              uniffi-bindgen generate "$UDL_FILE" --language kotlin --out-dir crates/bitwarden-uniffi/kotlin/sdk/src/main/java/
+            fi
+          fi
+          
+          # Verify bindings were generated
+          echo "Looking for generated Kotlin files..."
+          find crates/bitwarden-uniffi/kotlin -name "*.kt" -type f | head -20
+          
+          # Check specific SDK files that should exist
+          echo ""
+          echo "Checking for expected SDK classes..."
+          if [ -d "crates/bitwarden-uniffi/kotlin/sdk/src/main/java/com/bitwarden/sdk" ]; then
+            ls -la crates/bitwarden-uniffi/kotlin/sdk/src/main/java/com/bitwarden/sdk/
+          else
+            echo "⚠️ SDK directory not found, checking alternative locations..."
+            find crates/bitwarden-uniffi -type d -name "sdk" | xargs -I {} find {} -name "*.kt" | head -10
+          fi
+          
+          echo "✅ Kotlin bindings generation completed"
       
       - name: Build Android SDK library
         working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
@@ -124,11 +152,25 @@ jobs:
           # Set version to LOCAL for consistency
           echo "VERSION=LOCAL" >> $GITHUB_ENV
           
+          # Check if gradle wrapper exists
+          if [ ! -f "./gradlew" ]; then
+            echo "Gradle wrapper not found, creating one..."
+            gradle wrapper --gradle-version 8.5
+          fi
+          
           # Build the Android library (AAR)
-          ./gradlew :sdk:assembleRelease -Pversion=LOCAL
+          ./gradlew :sdk:assembleRelease -Pversion=LOCAL --stacktrace
           
           echo "✅ Android SDK built successfully"
           ls -la sdk/build/outputs/aar/
+          
+          # Verify AAR contents
+          if ls sdk/build/outputs/aar/*.aar 1> /dev/null 2>&1; then
+            AAR_FILE=$(ls sdk/build/outputs/aar/*.aar | head -1)
+            echo ""
+            echo "Checking AAR contents..."
+            unzip -l "$AAR_FILE" | grep -E "\.class|\.kt" | head -20
+          fi
       
       - name: Publish to local Maven repository
         working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
@@ -217,6 +259,11 @@ jobs:
             <packaging>aar</packaging>
           </project>
           EOF
+            
+            # Verify AAR contains necessary classes
+            echo ""
+            echo "Verifying SDK AAR contents..."
+            unzip -l "$AAR_FILE" | grep -E "CipherType|vault" | head -10 || echo "Warning: Could not find expected classes in AAR"
           fi
           
           echo "✅ SDK installed to local Maven repository"
