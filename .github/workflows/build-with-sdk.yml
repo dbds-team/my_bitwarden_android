@@ -1,0 +1,279 @@
+name: Build Android with Custom SDK
+
+on:
+  push:
+    branches: [build-private]
+  workflow_dispatch:
+
+jobs:
+  build-sdk:
+    name: Build Android SDK from Source
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+        with:
+          repository: dbds-team/my_sdk-internal
+          path: sdk-internal
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android, i686-linux-android
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools: 35.0.0
+          ndk-version: 26.3.11579264
+      
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk-internal -> target
+      
+      - name: Install cargo-ndk
+        run: |
+          cargo install cargo-ndk
+      
+      - name: Build Rust library for Android
+        working-directory: sdk-internal
+        run: |
+          # Set Android NDK environment
+          export ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264
+          
+          # Build for all Android architectures
+          cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android -t i686-linux-android \
+            -o crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs \
+            build --release
+          
+          echo "✅ Rust library built successfully"
+          ls -la crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs/
+      
+      - name: Generate Kotlin bindings
+        working-directory: sdk-internal
+        run: |
+          # Generate UniFFI bindings for Kotlin
+          cargo run --bin uniffi-bindgen generate \
+            --library target/release/libbitwarden_uniffi.so \
+            --language kotlin \
+            --out-dir crates/bitwarden-uniffi/kotlin/sdk/src/main/java \
+            crates/bitwarden-uniffi/src/bitwarden.udl
+          
+          echo "✅ Kotlin bindings generated"
+      
+      - name: Build Android SDK library
+        working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
+        run: |
+          # Build the Android library (AAR)
+          ./gradlew :sdk:assembleRelease
+          
+          echo "✅ Android SDK built successfully"
+          ls -la sdk/build/outputs/aar/
+      
+      - name: Publish to local Maven repository
+        working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
+        run: |
+          # Publish to local Maven repository
+          ./gradlew :sdk:publishToMavenLocal
+          
+          echo "✅ SDK published to local Maven repository"
+          ls -la ~/.m2/repository/com/bitwarden/
+      
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitwarden-sdk-android
+          path: |
+            sdk-internal/crates/bitwarden-uniffi/kotlin/sdk/build/outputs/aar/*.aar
+            ~/.m2/repository/com/bitwarden/sdk-android/
+
+  build-android:
+    needs: build-sdk
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      
+      - name: Download SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitwarden-sdk-android
+          path: sdk-artifact
+      
+      - name: Setup local Maven repository with SDK
+        run: |
+          # Copy SDK to local Maven repository
+          mkdir -p ~/.m2/repository/com/bitwarden/
+          cp -r sdk-artifact/com/bitwarden/sdk-android ~/.m2/repository/com/bitwarden/ || true
+          
+          # If AAR file exists, install it directly
+          if ls sdk-artifact/*.aar 1> /dev/null 2>&1; then
+            AAR_FILE=$(ls sdk-artifact/*.aar | head -1)
+            mvn install:install-file \
+              -Dfile="$AAR_FILE" \
+              -DgroupId=com.bitwarden \
+              -DartifactId=sdk-android \
+              -Dversion=LOCAL \
+              -Dpackaging=aar
+          fi
+          
+          echo "✅ SDK installed to local Maven repository"
+      
+      - name: Modify build to use local SDK
+        run: |
+          # Add mavenLocal() to repositories
+          sed -i '/repositories {/a\        mavenLocal()' settings.gradle.kts
+          
+          # Replace SDK dependency version with LOCAL
+          sed -i 's/bitwarden-sdk = .*/bitwarden-sdk = "LOCAL"/' gradle/libs.versions.toml
+          
+          # Remove GitHub Packages repository that requires authentication
+          sed -i '/maven.*github\.com\/bitwarden\/sdk/,/}/d' settings.gradle.kts
+          
+          echo "✅ Build configuration modified to use local SDK"
+      
+      - name: Handle Google Services
+        run: |
+          # Create a placeholder google-services.json
+          cat > app/google-services.json << 'EOF'
+          {
+            "project_info": {
+              "project_number": "123456789",
+              "project_id": "bitwarden-placeholder",
+              "storage_bucket": "bitwarden-placeholder.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789:android:abcdef123456",
+                  "android_client_info": {
+                    "package_name": "com.x8bit.bitwarden"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyDummyKeyPlaceholder"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          
+          echo "✅ Google Services configured"
+      
+      - name: Setup keystore
+        env:
+          KEY_JKS: ${{ secrets.KEY_JKS }}
+        run: |
+          # Create keystore from secret
+          echo "$KEY_JKS" | base64 -d > $PWD/release.jks
+          echo "✅ Keystore created at: $PWD/release.jks"
+          ls -la $PWD/release.jks
+      
+      - name: Build signed Release APK
+        env:
+          ALIAS: ${{ secrets.ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          KEYSTORE_PATH="$PWD/release.jks"
+          echo "🔨 Building Android app with custom SDK..."
+          
+          ./gradlew assembleStandardRelease \
+            -Pandroid.injected.signing.store.file="$KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$ANDROID_STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+          
+          echo "✅ APK built successfully"
+          ls -la app/build/outputs/apk/standard/release/
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitwarden-android-apk
+          path: app/build/outputs/apk/standard/release/*.apk
+      
+      - name: Generate version info
+        id: version
+        run: |
+          VERSION="v$(date +%Y%m%d.%H%M)-$(echo $GITHUB_SHA | head -c 7)"
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_OUTPUT
+          
+          # Get APK info
+          APK_PATH=$(ls app/build/outputs/apk/standard/release/*.apk | head -1)
+          APK_SIZE=$(ls -lh "$APK_PATH" | awk '{print $5}')
+          echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Bitwarden Android (Custom SDK) ${{ steps.version.outputs.tag }}"
+          draft: false
+          prerelease: false
+          body: |
+            ## 🚀 Bitwarden Android Release ${{ steps.version.outputs.tag }}
+            
+            **Build Date:** ${{ steps.version.outputs.date }}
+            **Commit:** `${{ github.sha }}`
+            **Branch:** `build-private`
+            **APK Size:** ${{ steps.version.outputs.apk_size }}
+            
+            ### ✨ Features
+            - ✅ **100% Open Source Build** - SDK built from source
+            - ✅ **Custom SDK** - Built from [dbds-team/my_sdk-internal](https://github.com/dbds-team/my_sdk-internal)
+            - ✅ **Custom Signed** - Signed with your own keystore
+            - ✅ **No Telemetry** - Privacy-focused build
+            - 🔐 **Standard Edition** - Full features
+            
+            ### 📱 Installation
+            
+            1. **Enable Unknown Sources:**
+               - Settings → Security → Unknown sources (Enable)
+            
+            2. **Download and Install:**
+               - Download the APK file below
+               - Open the downloaded file
+               - Follow installation prompts
+            
+            3. **Verify Signature** (Optional):
+               ```bash
+               apksigner verify --verbose bitwarden-*.apk
+               ```
+            
+            ### ⚠️ Important Notes
+            - This APK won't auto-update from Play Store
+            - Backup your vault before installing
+            - Built with custom open-source SDK
+            
+            ### 🔄 Update Instructions
+            Download new releases from this repository and install over existing app.
+          files: |
+            app/build/outputs/apk/standard/release/*.apk
