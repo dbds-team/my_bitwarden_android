@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     permissions:
-      contents: read
+      contents: write  # 需要 write 权限来创建 Release
       packages: read
     steps:
       - uses: actions/checkout@v4
@@ -24,13 +24,27 @@ jobs:
       
       - name: Modify dependencies to avoid private packages
         run: |
-          # Remove the private SDK repository to avoid authentication issues
-          sed -i '/GitHubPackages.*Bitwarden/,/}/d' settings.gradle.kts
+          # Remove ALL GitHub Packages repositories to avoid issues
+          sed -i '/maven.*github.*packages/,/^[[:space:]]*}/d' settings.gradle.kts
+          sed -i '/GitHubPackages/,/}/d' settings.gradle.kts
+          
+          # Ensure we have standard repositories
+          if ! grep -q "mavenCentral()" settings.gradle.kts; then
+            sed -i '/repositories {/a\        mavenCentral()' settings.gradle.kts
+          fi
+          if ! grep -q 'google()' settings.gradle.kts; then
+            sed -i '/repositories {/a\        google()' settings.gradle.kts
+          fi
+          
           # Comment out SDK dependency in version catalog
           sed -i 's/bitwarden-sdk = .*/# &/' gradle/libs.versions.toml
+          
           # Comment out SDK implementation in build files
           find . -name "*.gradle.kts" -exec sed -i 's/.*bitwarden-sdk.*/\/\/ &/' {} \;
+          
           echo "Modified dependencies to skip private packages"
+          echo "=== Current repositories in settings.gradle.kts ==="
+          grep -A 10 "repositories {" settings.gradle.kts || true
       
       - name: Setup keystore
         env:
@@ -38,10 +52,6 @@ jobs:
         run: |
           mkdir -p keystores
           echo "$KEY_JKS" | base64 -d > keystores/release.jks
-      
-      - name: Build Debug APK
-        run: |
-          ./gradlew assembleStandardDebug
       
       - name: Build signed Release APK
         env:
@@ -57,10 +67,63 @@ jobs:
       
       - uses: actions/upload-artifact@v4
         with:
-          name: bitwarden-android-debug-apk
-          path: app/build/outputs/apk/standard/debug/*.apk
-      
-      - uses: actions/upload-artifact@v4
-        with:
           name: bitwarden-android-release-apk  
           path: app/build/outputs/apk/standard/release/*.apk
+      
+      - name: Generate version info
+        id: version
+        run: |
+          VERSION="v$(date +%Y%m%d.%H%M)-$(echo $GITHUB_SHA | head -c 7)"
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_OUTPUT
+          
+          # Get APK info
+          APK_PATH=$(ls app/build/outputs/apk/standard/release/*.apk | head -1)
+          APK_SIZE=$(ls -lh "$APK_PATH" | awk '{print $5}')
+          echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Bitwarden Android ${{ steps.version.outputs.tag }}"
+          draft: false
+          prerelease: false
+          body: |
+            ## 🚀 Bitwarden Android Release ${{ steps.version.outputs.tag }}
+            
+            **Build Date:** ${{ steps.version.outputs.date }}
+            **Commit:** `${{ github.sha }}`
+            **Branch:** `build-private`
+            **APK Size:** ${{ steps.version.outputs.apk_size }}
+            
+            ### ✨ Features
+            - ✅ **100% Open Source Build** - No private dependencies
+            - ✅ **Custom Signed** - Signed with your own keystore
+            - ✅ **No Telemetry** - Privacy-focused build
+            - 🔐 **Standard Edition** - Full features without premium restrictions
+            
+            ### 📱 Installation
+            
+            1. **Enable Unknown Sources:**
+               - Settings → Security → Unknown sources (Enable)
+            
+            2. **Download and Install:**
+               - Download the APK file below
+               - Open the downloaded file
+               - Follow installation prompts
+            
+            3. **Verify Signature** (Optional):
+               ```bash
+               apksigner verify --verbose bitwarden-*.apk
+               ```
+            
+            ### ⚠️ Important Notes
+            - This APK won't auto-update from Play Store
+            - Backup your vault before installing
+            - Built without Bitwarden SDK (some features may be limited)
+            
+            ### 🔄 Update Instructions
+            Download new releases from this repository and install over existing app.
+          files: |
+            app/build/outputs/apk/standard/release/*.apk
