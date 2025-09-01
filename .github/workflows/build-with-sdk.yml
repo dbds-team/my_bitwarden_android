@@ -48,11 +48,15 @@ jobs:
         run: |
           # Set Android NDK environment
           export ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264
+          export ANDROID_HOME=$ANDROID_SDK_ROOT
+          
+          # First, build the uniffi library for the host (needed for code generation)
+          cargo build --release -p bitwarden-uniffi
           
           # Build for all Android architectures
           cargo ndk -t aarch64-linux-android -t armv7-linux-androideabi -t x86_64-linux-android -t i686-linux-android \
             -o crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs \
-            build --release
+            build --release -p bitwarden-uniffi
           
           echo "✅ Rust library built successfully"
           ls -la crates/bitwarden-uniffi/kotlin/sdk/src/main/jniLibs/
@@ -60,20 +64,22 @@ jobs:
       - name: Generate Kotlin bindings
         working-directory: sdk-internal
         run: |
-          # Generate UniFFI bindings for Kotlin
-          cargo run --bin uniffi-bindgen generate \
-            --library target/release/libbitwarden_uniffi.so \
-            --language kotlin \
-            --out-dir crates/bitwarden-uniffi/kotlin/sdk/src/main/java \
-            crates/bitwarden-uniffi/src/bitwarden.udl
+          # Generate Kotlin bindings using uniffi-bindgen-kotlin
+          cargo run -p uniffi-bindgen-kotlin
           
+          # The bindings should be generated in the right place by the build script
           echo "✅ Kotlin bindings generated"
+          find crates/bitwarden-uniffi/kotlin -name "*.kt" | head -20
+          ls -la crates/bitwarden-uniffi/kotlin/sdk/src/main/java/com/bitwarden/sdk/ || true
       
       - name: Build Android SDK library
         working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
         run: |
+          # Set version to LOCAL for consistency
+          echo "VERSION=LOCAL" >> $GITHUB_ENV
+          
           # Build the Android library (AAR)
-          ./gradlew :sdk:assembleRelease
+          ./gradlew :sdk:assembleRelease -Pversion=LOCAL
           
           echo "✅ Android SDK built successfully"
           ls -la sdk/build/outputs/aar/
@@ -81,11 +87,31 @@ jobs:
       - name: Publish to local Maven repository
         working-directory: sdk-internal/crates/bitwarden-uniffi/kotlin
         run: |
+          # Modify publishing configuration to use local repository only
+          cat >> sdk/build.gradle << 'EOF'
+          
+          // Override publishing for local build
+          afterEvaluate {
+              publishing {
+                  publications {
+                      maven {
+                          groupId = 'com.bitwarden'
+                          artifactId = 'sdk-android'
+                          version = 'LOCAL'
+                      }
+                  }
+                  repositories {
+                      mavenLocal()
+                  }
+              }
+          }
+          EOF
+          
           # Publish to local Maven repository
-          ./gradlew :sdk:publishToMavenLocal
+          ./gradlew :sdk:publishToMavenLocal -Pversion=LOCAL
           
           echo "✅ SDK published to local Maven repository"
-          ls -la ~/.m2/repository/com/bitwarden/
+          ls -la ~/.m2/repository/com/bitwarden/sdk-android/LOCAL/ || true
       
       - name: Upload SDK artifact
         uses: actions/upload-artifact@v4
@@ -120,22 +146,35 @@ jobs:
       
       - name: Setup local Maven repository with SDK
         run: |
-          # Copy SDK to local Maven repository
-          mkdir -p ~/.m2/repository/com/bitwarden/
-          cp -r sdk-artifact/com/bitwarden/sdk-android ~/.m2/repository/com/bitwarden/ || true
+          # Ensure the Maven repository structure exists
+          mkdir -p ~/.m2/repository/com/bitwarden/sdk-android/LOCAL/
           
-          # If AAR file exists, install it directly
+          # Copy SDK artifacts to local Maven repository
+          if [ -d "sdk-artifact/com/bitwarden/sdk-android" ]; then
+            cp -r sdk-artifact/com/bitwarden/sdk-android/* ~/.m2/repository/com/bitwarden/sdk-android/
+          fi
+          
+          # Also copy AAR files if they exist
           if ls sdk-artifact/*.aar 1> /dev/null 2>&1; then
             AAR_FILE=$(ls sdk-artifact/*.aar | head -1)
-            mvn install:install-file \
-              -Dfile="$AAR_FILE" \
-              -DgroupId=com.bitwarden \
-              -DartifactId=sdk-android \
-              -Dversion=LOCAL \
-              -Dpackaging=aar
+            cp "$AAR_FILE" ~/.m2/repository/com/bitwarden/sdk-android/LOCAL/sdk-android-LOCAL.aar
+            
+            # Create a basic POM file
+            cat > ~/.m2/repository/com/bitwarden/sdk-android/LOCAL/sdk-android-LOCAL.pom << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns="http://maven.apache.org/POM/4.0.0"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>com.bitwarden</groupId>
+            <artifactId>sdk-android</artifactId>
+            <version>LOCAL</version>
+            <packaging>aar</packaging>
+          </project>
+          EOF
           fi
           
           echo "✅ SDK installed to local Maven repository"
+          ls -la ~/.m2/repository/com/bitwarden/sdk-android/LOCAL/ || true
       
       - name: Modify build to use local SDK
         run: |
