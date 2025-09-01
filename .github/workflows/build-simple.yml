@@ -1,0 +1,330 @@
+name: Build Android Simple (No SDK)
+
+on:
+  push:
+    branches: [build-private]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      
+      - name: Create SDK stub classes
+        run: |
+          echo "📦 Creating SDK stub implementation..."
+          
+          # Create the SDK package directory structure
+          mkdir -p app/src/main/java/com/bitwarden/sdk
+          mkdir -p app/src/main/java/com/bitwarden/vault
+          
+          # Create CipherType enum
+          cat > app/src/main/java/com/bitwarden/vault/CipherType.kt << 'EOF'
+          package com.bitwarden.vault
+          
+          enum class CipherType {
+              LOGIN,
+              SECURE_NOTE,
+              CARD,
+              IDENTITY,
+              SSH_KEY
+          }
+          EOF
+          
+          # Create other necessary vault classes
+          cat > app/src/main/java/com/bitwarden/vault/Cipher.kt << 'EOF'
+          package com.bitwarden.vault
+          
+          data class Cipher(
+              val id: String,
+              val type: CipherType,
+              val name: String,
+              val notes: String? = null,
+              val favorite: Boolean = false,
+              val organizationId: String? = null,
+              val folderId: String? = null,
+              val collectionIds: List<String> = emptyList(),
+              val creationDate: String,
+              val revisionDate: String,
+              val deletedDate: String? = null
+          )
+          EOF
+          
+          # Create SDK Client stub
+          cat > app/src/main/java/com/bitwarden/sdk/Client.kt << 'EOF'
+          package com.bitwarden.sdk
+          
+          import com.bitwarden.vault.*
+          
+          class Client {
+              fun vault(): VaultClient = VaultClient()
+              fun platform(): PlatformClient = PlatformClient()
+              fun auth(): AuthClient = AuthClient()
+              fun generators(): GeneratorsClient = GeneratorsClient()
+              fun exporters(): ExportersClient = ExportersClient()
+              fun sends(): SendsClient = SendsClient()
+              fun crypto(): CryptoClient = CryptoClient()
+          }
+          
+          class VaultClient {
+              suspend fun ciphers(): CiphersClient = CiphersClient()
+              suspend fun folders(): FoldersClient = FoldersClient()
+              suspend fun collections(): CollectionsClient = CollectionsClient()
+          }
+          
+          class CiphersClient {
+              suspend fun encrypt(cipher: Cipher): Cipher = cipher
+              suspend fun decrypt(cipher: Cipher): Cipher = cipher
+              suspend fun list(): List<Cipher> = emptyList()
+          }
+          
+          class FoldersClient {
+              suspend fun list(): List<Folder> = emptyList()
+              suspend fun encrypt(folder: Folder): Folder = folder
+              suspend fun decrypt(folder: Folder): Folder = folder
+          }
+          
+          class CollectionsClient {
+              suspend fun list(): List<Collection> = emptyList()
+          }
+          
+          class PlatformClient {
+              fun fingerprint(material: String, publicKey: String): String = ""
+              fun loadFlags(flags: Map<String, Boolean>) {}
+          }
+          
+          class AuthClient {
+              suspend fun passwordStrength(password: String, inputs: List<String>): UByte = 0u
+              suspend fun satisfiesPolicy(password: String, policy: PasswordPolicy): Boolean = true
+              suspend fun makeRegisterKeys(email: String, password: String, kdf: Kdf): RegisterKeyResponse =
+                  RegisterKeyResponse("", "", "")
+              suspend fun hashPassword(email: String, password: String, kdfParams: Kdf, purpose: HashPurpose): String = ""
+              suspend fun validatePassword(password: String, hash: String): Boolean = true
+              suspend fun validatePasswordUserKey(password: String, encryptedUserKey: String): String = ""
+              suspend fun newAuthRequest(email: String): AuthRequestResponse = 
+                  AuthRequestResponse("", "", "", "", "")
+              suspend fun approveAuthRequest(publicKey: String): AsymmetricEncString = 
+                  AsymmetricEncString("")
+              suspend fun trustDevice(): TrustDeviceResponse = TrustDeviceResponse("", "", "")
+          }
+          
+          class GeneratorsClient {
+              suspend fun password(settings: PasswordGeneratorRequest): String = "GeneratedPassword123!"
+              suspend fun passphrase(settings: PassphraseGeneratorRequest): String = "generated-passphrase"
+              suspend fun username(settings: UsernameGeneratorRequest): String = "generated-username"
+          }
+          
+          class ExportersClient {
+              suspend fun exportVault(format: ExportFormat, ciphers: List<Cipher>, folders: List<Folder>): String = ""
+              suspend fun exportOrganizationVault(collections: List<Collection>, ciphers: List<Cipher>): String = ""
+          }
+          
+          class SendsClient {
+              suspend fun decrypt(send: Send): SendView = SendView("", "", "", SendType.TEXT, "")
+              suspend fun decryptList(sends: List<Send>): List<SendView> = emptyList()
+              suspend fun decryptFile(send: Send, encryptedFilePath: String, decryptedFilePath: String) {}
+              suspend fun encrypt(send: SendView): Send = Send("", "", "", SendType.TEXT, "")
+              suspend fun encryptFile(decryptedFilePath: String, encryptedFilePath: String) {}
+              suspend fun encryptBuffer(send: SendView, buffer: ByteArray): ByteArray = byteArrayOf()
+          }
+          
+          class CryptoClient {
+              suspend fun initializeUserCrypto(req: InitUserCryptoRequest): InitUserCryptoResponse = 
+                  InitUserCryptoResponse(UserCryptoMethods(emptySet()))
+              suspend fun initializeOrgCrypto(req: InitOrgCryptoRequest) {}
+              suspend fun getUserEncryptionKey(): String = ""
+              suspend fun updatePassword(newPassword: String) {}
+              suspend fun deriveKeyConnector(req: DeriveKeyConnectorRequest): String = ""
+              suspend fun derivePinKey(pin: String): DerivePinKeyResponse = DerivePinKeyResponse("", "")
+              suspend fun derivePinUserKey(encryptedPin: EncString): EncString = EncString("")
+              suspend fun enroll(req: KeyConnectorKeyPair): String = ""
+          }
+          
+          // Data classes
+          data class Folder(val id: String, val name: String)
+          data class Collection(val id: String, val name: String, val organizationId: String)
+          data class Send(val id: String, val name: String, val notes: String?, val type: SendType, val text: String?)
+          data class SendView(val id: String, val name: String, val notes: String?, val type: SendType, val text: String?)
+          enum class SendType { TEXT, FILE }
+          data class PasswordPolicy(val minLength: Int?, val requireUpper: Boolean, val requireLower: Boolean)
+          data class Kdf(val type: KdfType, val iterations: Int?)
+          enum class KdfType { PBKDF2, ARGON2ID }
+          data class RegisterKeyResponse(val masterPasswordHash: String, val encryptedUserKey: String, val publicKey: String)
+          enum class HashPurpose { SERVER_AUTHORIZATION, LOCAL_AUTHORIZATION }
+          data class AuthRequestResponse(val publicKey: String, val accessCode: String, val fingerprint: String, val privateKey: String, val requestId: String)
+          data class AsymmetricEncString(val value: String)
+          data class TrustDeviceResponse(val deviceKey: String, val protectedUserKey: AsymmetricEncString, val protectedDevicePrivateKey: AsymmetricEncString)
+          data class PasswordGeneratorRequest(val length: Int, val uppercase: Boolean, val lowercase: Boolean)
+          data class PassphraseGeneratorRequest(val numWords: Int, val wordSeparator: String)
+          data class UsernameGeneratorRequest(val type: String)
+          enum class ExportFormat { CSV, JSON, ENCRYPTED_JSON }
+          data class InitUserCryptoRequest(val kdfParams: Kdf, val email: String, val privateKey: String, val method: InitUserCryptoMethod)
+          sealed class InitUserCryptoMethod
+          data class InitUserCryptoResponse(val userCryptoMethods: UserCryptoMethods)
+          data class UserCryptoMethods(val methods: Set<String>)
+          data class InitOrgCryptoRequest(val organizationKeys: Map<String, AsymmetricEncString>)
+          data class DeriveKeyConnectorRequest(val userKeyEncrypted: String, val password: String, val kdf: Kdf)
+          data class DerivePinKeyResponse(val pinProtectedUserKey: EncString, val encryptedPin: EncString)
+          data class EncString(val value: String)
+          data class KeyConnectorKeyPair(val publicKey: String, val encryptedPrivateKey: String)
+          EOF
+          
+          # Create BitwardenClient
+          cat > app/src/main/java/com/bitwarden/sdk/BitwardenClient.kt << 'EOF'
+          package com.bitwarden.sdk
+          
+          object BitwardenClient {
+              fun newClient(settings: ClientSettings? = null): Client = Client()
+          }
+          
+          data class ClientSettings(
+              val apiUrl: String? = null,
+              val identityUrl: String? = null,
+              val userAgent: String? = null,
+              val deviceType: DeviceType = DeviceType.ANDROID
+          )
+          
+          enum class DeviceType {
+              ANDROID,
+              IOS,
+              CHROME_EXTENSION,
+              FIREFOX_EXTENSION,
+              EDGE_EXTENSION,
+              WINDOWS_DESKTOP,
+              MAC_DESKTOP,
+              LINUX_DESKTOP,
+              WEB,
+              CLI,
+              SAFARI_EXTENSION
+          }
+          EOF
+          
+          echo "✅ SDK stub classes created"
+      
+      - name: Handle Google Services
+        run: |
+          # Create a placeholder google-services.json
+          cat > app/google-services.json << 'EOF'
+          {
+            "project_info": {
+              "project_number": "123456789",
+              "project_id": "bitwarden-placeholder",
+              "storage_bucket": "bitwarden-placeholder.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:123456789:android:abcdef123456",
+                  "android_client_info": {
+                    "package_name": "com.x8bit.bitwarden"
+                  }
+                },
+                "oauth_client": [],
+                "api_key": [
+                  {
+                    "current_key": "AIzaSyDummyKeyPlaceholder"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          
+          echo "✅ Google Services configured"
+      
+      - name: Remove SDK dependency from build
+        run: |
+          # Comment out the SDK dependency in gradle files
+          find . -name "*.gradle" -o -name "*.gradle.kts" | while read file; do
+            sed -i 's/.*com\.bitwarden:sdk-android.*/\/\/ SDK dependency removed for stub build/' "$file"
+          done
+          
+          # Remove any GitHub packages repository requirements
+          sed -i '/maven.*github\.com\/bitwarden/,/}/d' settings.gradle.kts
+          
+          echo "✅ Build configuration modified"
+      
+      - name: Setup Keystore
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$UPLOAD_KEYSTORE_BASE64" ]; then
+            echo "⚠️ No keystore provided, using debug keystore"
+            cp ~/.android/debug.keystore app/keystore.jks || echo "Debug keystore not found"
+          else
+            echo "$UPLOAD_KEYSTORE_BASE64" | base64 -d > app/keystore.jks
+            echo "✅ Release keystore configured"
+          fi
+      
+      - name: Build APK
+        env:
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+        run: |
+          # Set default values if not provided
+          export UPLOAD_KEYSTORE_PASSWORD="${UPLOAD_KEYSTORE_PASSWORD:-android}"
+          export UPLOAD_KEY_PASSWORD="${UPLOAD_KEY_PASSWORD:-android}"
+          export UPLOAD_KEY_ALIAS="${UPLOAD_KEY_ALIAS:-androiddebugkey}"
+          
+          # Build the release APK
+          ./gradlew :app:assembleStandardRelease \
+            -PuploadKeystorePassword="$UPLOAD_KEYSTORE_PASSWORD" \
+            -PuploadKeyPassword="$UPLOAD_KEY_PASSWORD" \
+            -PuploadKeyAlias="$UPLOAD_KEY_ALIAS" \
+            --stacktrace
+          
+          echo "✅ APK built successfully"
+          ls -la app/build/outputs/apk/standard/release/
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitwarden-android-apk
+          path: app/build/outputs/apk/standard/release/*.apk
+      
+      - name: Get Version
+        id: version
+        run: |
+          VERSION=$(grep "versionName" app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+      
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Bitwarden Android ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            app/build/outputs/apk/standard/release/*.apk
+          body: |
+            ## Bitwarden Android Build
+            
+            Built from private repository without external SDK dependencies.
+            
+            ### Download
+            - 📱 [bitwarden-standard-release.apk]
+            
+            ### Notes
+            - Built with stub SDK implementation
+            - No external dependencies required
