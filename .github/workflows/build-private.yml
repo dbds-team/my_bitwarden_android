@@ -134,8 +134,10 @@ jobs:
         env:
           KEY_JKS: ${{ secrets.KEY_JKS }}
         run: |
-          mkdir -p keystores
-          echo "$KEY_JKS" | base64 -d > keystores/release.jks
+          # Create keystore in the current directory with absolute path
+          echo "$KEY_JKS" | base64 -d > $PWD/release.jks
+          echo "Keystore created at: $PWD/release.jks"
+          ls -la $PWD/release.jks
       
       - name: Build signed Release APK
         env:
@@ -143,11 +145,15 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
+          # Use absolute path for keystore
+          KEYSTORE_PATH="$PWD/release.jks"
+          echo "Using keystore at: $KEYSTORE_PATH"
+          
           ./gradlew assembleStandardRelease \
-            -Pandroid.injected.signing.store.file=../../keystores/release.jks \
-            -Pandroid.injected.signing.store.password=$ANDROID_STORE_PASSWORD \
-            -Pandroid.injected.signing.key.alias=$ALIAS \
-            -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD
+            -Pandroid.injected.signing.store.file="$KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$ANDROID_STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
       
       - uses: actions/upload-artifact@v4
         with:
