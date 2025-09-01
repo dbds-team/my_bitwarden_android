@@ -47,8 +47,30 @@ jobs:
           # Comment out SDK dependency in version catalog
           sed -i 's/bitwarden-sdk = .*/# &/' gradle/libs.versions.toml
           
-          # Comment out SDK implementation in build files
-          find . -name "*.gradle.kts" -exec sed -i 's/.*bitwarden-sdk.*/\/\/ &/' {} \;
+          # Comment out SDK implementation in build files - more thorough approach
+          # Handle various formats of SDK references
+          find . -name "*.gradle.kts" -exec sed -i \
+            -e 's/.*libs\.bitwarden\.sdk.*/\/\/ &/' \
+            -e 's/.*implementation.*bitwarden.*sdk.*/\/\/ &/' \
+            -e 's/.*api.*bitwarden.*sdk.*/\/\/ &/' \
+            {} \;
+          
+          # Specifically fix app/build.gradle.kts line 259
+          sed -i '259s/.*implementation.*libs\.bitwarden\.sdk.*/    \/\/ implementation(libs.bitwarden.sdk) - Commented out/' app/build.gradle.kts || true
+          
+          # Also comment out any SDK imports in Kotlin files to prevent compilation errors
+          find app/src -name "*.kt" -exec sed -i \
+            -e 's/^import.*bitwarden\.sdk.*/\/\/ &/' \
+            -e 's/.*BitwardenSdk.*/\/\/ &/' \
+            {} \; || true
+          
+          # Show what we changed
+          echo "=== SDK references in app/build.gradle.kts ==="
+          grep -n "bitwarden.sdk" app/build.gradle.kts || echo "No SDK references found"
+          
+          # Check if line 259 was properly commented
+          echo "=== Line 259 in app/build.gradle.kts ==="
+          sed -n '259p' app/build.gradle.kts
           
           echo "=== Modified settings.gradle.kts repositories ==="
           grep -A 15 "repositories {" settings.gradle.kts || true
